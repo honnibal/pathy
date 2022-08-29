@@ -1,8 +1,9 @@
 from dataclasses import dataclass
 from typing import Any, Dict, Generator, List, Optional
+import os
 
 try:
-    import boto3  # type:ignore
+    import boto3
     from botocore.client import ClientError
     from botocore.exceptions import ParamValidationError
 
@@ -112,27 +113,46 @@ class BucketS3(Bucket):
 
 class BucketClientS3(BucketClient):
     client: S3NativeClient
-    _session: Optional[boto3.Session]
+    _session: boto3.Session
 
     @property
     def client_params(self) -> Dict[str, Any]:
-        session: Any = self._session
-        result: Any = dict() if session is None else dict(client=session.client("s3"))
-        return result
+        return {"client": self.client}
 
-    def __init__(self, **kwargs: Any) -> None:
-        self.recreate(**kwargs)
+    def __init__(
+        self,
+        *,
+        key_id: Optional[str] = None,
+        key_secret: Optional[str] = None,
+        client_config: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> None:
+        self._session = boto3.Session(
+            aws_access_key_id=key_id,
+            aws_secret_access_key=key_secret,
+        )
+        client_config = client_config or {}
+        if "endpoint_url" not in client_config:
+            client_config["endpoint_url"] = os.environ.get("AWS_ENDPOINT_URL")
+        self.client = self._session.client("s3", **client_config)
 
-    def recreate(self, **kwargs: Any) -> None:
-        key_id = kwargs.get("key_id", None)
-        key_secret = kwargs.get("key_secret", None)
-        boto_session: Any = boto3
+    def recreate(
+        self,
+        *,
+        key_id: Optional[str] = None,
+        key_secret: Optional[str] = None,
+        client_config: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> None:
         if key_id is not None and key_secret is not None:
-            self._session = boto_session = boto3.Session(  # type:ignore
+            self._session = boto3.Session(
                 aws_access_key_id=key_id,
                 aws_secret_access_key=key_secret,
             )
-        self.client = boto_session.client("s3")  # type:ignore
+        client_config = client_config or {}
+        if "endpoint_url" not in client_config:
+            client_config["endpoint_url"] = os.environ.get("AWS_ENDPOINT_URL")
+        self.client = self._session.client("s3", **client_config)
 
     def make_uri(self, path: PurePathy) -> str:
         return str(path)
@@ -149,9 +169,12 @@ class BucketClientS3(BucketClient):
         # Because we want all the parents of a valid blob (e.g. "directory" in
         # "directory/foo.file") to return True, we enumerate the blobs with a prefix
         # and compare the object names to see if they match a substring of the path
-        key_name = str(path.key)
+        if path.key is None:
+            prefix = path._flavour.sep
+        else:
+            prefix = f"{path.key}{path._flavour.sep}"
         for obj in self.list_blobs(path):
-            if obj.name.startswith(key_name + path._flavour.sep):  # type:ignore
+            if obj.name.startswith(prefix):
                 return True
         return False
 
@@ -162,20 +185,33 @@ class BucketClientS3(BucketClient):
             return None
 
     def get_bucket(self, path: PurePathy) -> BucketS3:
+        # TODO: I've separated these into different try/excepts
+        # but I don't know how to narrow the exceptions
+        # further.
         try:
             native_bucket = self.client.head_bucket(Bucket=path.root)
-            return BucketS3(str(path.root), client=self.client, bucket=native_bucket)
         except (ClientError, ParamValidationError):
+            # TODO: These errors are overly broad, right?
+            # Probably there are other errors that don't
+            # indicate non-existence?
             raise FileNotFoundError(f"Bucket {path.root} does not exist!")
 
-    def list_buckets(  # type:ignore[override]
+        try:
+            return BucketS3(str(path.root), client=self.client, bucket=native_bucket)
+        except (ClientError, ParamValidationError):
+            # TODO: These errors are overly broad, right?
+            # Probably there are other errors that don't
+            # indicate non-existence?
+            raise FileNotFoundError(f"Bucket {path.root} does not exist!")
+
+    def list_buckets(
         self, **kwargs: Dict[str, Any]
     ) -> Generator[S3NativeBucket, None, None]:
         native_buckets = self.client.list_buckets(**kwargs)["Buckets"]
         results = (BucketS3(n["Name"], self.client, n) for n in native_buckets)
         return results
 
-    def scandir(  # type:ignore[override]
+    def scandir(
         self,
         path: Optional[PurePathy] = None,
         prefix: Optional[str] = None,
