@@ -680,7 +680,7 @@ class Pathy(Path, PurePathy, _PathyExtensions):
                 newline=newline,
             )
         except KeyError as e:
-            if str(e) != "ActualObjectSize" or self.stat().size != 0:
+            if e.args != ("ActualObjectSize",) or self.stat().size != 0:
                 raise
             else:
                 if "b" in mode:
