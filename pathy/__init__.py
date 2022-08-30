@@ -6,7 +6,7 @@ import tempfile
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from io import DEFAULT_BUFFER_SIZE
+from io import DEFAULT_BUFFER_SIZE, StringIO, BytesIO
 from pathlib import _Accessor  # type:ignore
 from pathlib import _PosixFlavour  # type:ignore
 from pathlib import _WindowsFlavour  # type:ignore
@@ -669,14 +669,24 @@ class Pathy(Path, PurePathy, _PathyExtensions):
         if "b" in mode and encoding:
             raise ValueError("binary mode doesn't take an encoding argument")
 
-        return self._accessor.open(
-            self,
-            mode=mode,
-            buffering=buffering,
-            encoding=encoding,
-            errors=errors,
-            newline=newline,
-        )
+        # Work around a smart_open bug where if the file size is 0 we get a key error.
+        try:
+            return self._accessor.open(
+                self,
+                mode=mode,
+                buffering=buffering,
+                encoding=encoding,
+                errors=errors,
+                newline=newline,
+            )
+        except KeyError as e:
+            if str(e) != "ActualObjectSize" or self.stat().size != 0:
+                raise
+            else:
+                if "b" in mode:
+                    return BytesIO(b"")
+                else:
+                    return StringIO("", newline=newline)
 
     def owner(self: "Pathy") -> Optional[str]:  # type:ignore[override]
         """Returns the name of the user that owns the bucket or blob
